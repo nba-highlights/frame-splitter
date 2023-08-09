@@ -36,6 +36,9 @@ def confirm_subscription(request_header, request_data):
             app.logger.warning(f"Failed to confirmed subscription. Code {response.status_code}.")
             return jsonify({'message': 'Failed to confirm subscription'}), 500
 
+    return jsonify({"message": "Header does not contain 'x-amz-sns-message-type': 'SubscriptionConfirmation'. No "
+                               "subscription to confirm."}), 500
+
 
 @app.route('/split-full-match-video', methods=['POST'])
 def split_full_match_video():
@@ -47,7 +50,9 @@ def split_full_match_video():
     except json.JSONDecodeError as e:
         return jsonify({'error': str(e)}), 400
 
-    confirm_subscription(request.headers, data)
+    # if the subscription is confirmed, return after it
+    if request.headers.get('x-amz-sns-message-type') == 'SubscriptionConfirmation':
+        return confirm_subscription(request.headers, data)
 
     app.logger.info(f"Received Event: {data}.")
 
@@ -66,8 +71,9 @@ def split_full_match_video():
     app.logger.info(f"Received following message: {message}")
     app.logger.info(f"Downloading Object: {object_key} from Bucket: {bucket}.")
 
-    with open(f"video_dir/{object_key}", 'wb') as file:
+    with open(f"{video_dir}/{object_key}", 'wb') as file:
         s3.download_fileobj(bucket, object_key, file)
+        app.logger.info("Download successful.")
 
     return jsonify({'message': 'Hello from the endpoint'}), 200
 
