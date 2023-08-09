@@ -2,6 +2,8 @@
 
 import json
 import logging
+from io import BytesIO
+
 import boto3
 import cv2
 
@@ -101,11 +103,21 @@ def split_full_match_video():
                 break
 
             frame_count += 1
-            frame_filename = f'{frame_dir}/{object_key}_frame_{frame_count:04d}.jpg'
+            frame_name = f"{object_key}_frame_{frame_count:04d}.jpg"
+            frame_filename = f'{frame_dir}/{frame_name}'
             cv2.imwrite(frame_filename, frame)
 
-        # Release the video capture object and close the window
+            img_bytes = frame.tobytes()
+
+            # Specify S3 bucket details
+            bucket_name = "nba-match-frames"
+
+            # Upload the frame to S3
+            s3.upload_fileobj(BytesIO(img_bytes), bucket_name, frame_name)
+
+        # Release the video capture object
         cap.release()
+
 
     return jsonify({'message': 'Hello from the endpoint'}), 200
 
