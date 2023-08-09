@@ -58,22 +58,25 @@ def split_full_match_video():
 
     # extract bucket and key
     message = json.loads(data["Message"])
-    detail = message["detail"]
-    bucket = detail["bucket"]["name"]
-    object_key = detail["object"]["key"]
 
-    video_dir = "temp-video"
-    Path(video_dir).mkdir(parents=True, exist_ok=True)
+    if message["detail-type"] == "Object Created":
+        app.logger.info("Received object created message.")
+        detail = message["detail"]
+        bucket = detail["bucket"]["name"]
+        object_key = detail["object"]["key"]
 
-    # download object
-    s3 = boto3.client('s3')
+        video_dir = "temp-video"
+        Path(video_dir).mkdir(parents=True, exist_ok=True)
 
-    app.logger.info(f"Received following message: {message}")
-    app.logger.info(f"Downloading Object: {object_key} from Bucket: {bucket}.")
+        # download object
+        s3 = boto3.client('s3')
 
-    with open(f"{video_dir}/{object_key}", 'wb') as file:
-        s3.download_fileobj(bucket, object_key, file)
-        app.logger.info("Download successful.")
+        app.logger.info(f"Received following message: {message}")
+        app.logger.info(f"Downloading Object: {object_key} from Bucket: {bucket}.")
+
+        with open(f"{video_dir}/{object_key}", 'wb') as file:
+            s3.download_fileobj(bucket, object_key, file)
+            app.logger.info("Download successful.")
 
     return jsonify({'message': 'Hello from the endpoint'}), 200
 
