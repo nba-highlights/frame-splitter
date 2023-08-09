@@ -120,7 +120,7 @@ def split_full_match_video():
             # Upload the frame to S3
             metadata = {"game-id": game_id}
             app.logger.info(f"Uploading {frame_object_key} to {bucket_name}.")
-            s3.upload_fileobj(BytesIO(img_bytes), bucket_name, frame_object_key, Metadata=metadata)
+            s3.upload_fileobj(BytesIO(img_bytes), bucket_name, frame_object_key, ExtraArgs={"Metadata": metadata})
 
         # Release the video capture object
         cap.release()
