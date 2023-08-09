@@ -94,6 +94,8 @@ def split_full_match_video():
         Path(frame_dir).mkdir(parents=True, exist_ok=True)
 
         frame_count = 0
+
+        app.logger.info("Going through frames of the video.")
         # Loop through the frames
         while True:
             ret, frame = cap.read()
@@ -110,14 +112,17 @@ def split_full_match_video():
             img_bytes = frame.tobytes()
 
             # Specify S3 bucket details
+            # save the frame in a folder named after the game name
             bucket_name = "nba-match-frames"
+            game_id = object_key.split(".")[0]
+            frame_object_key = f"{game_id}/frame_{frame_count:04d}.jpg"
 
             # Upload the frame to S3
-            s3.upload_fileobj(BytesIO(img_bytes), bucket_name, frame_name)
+            app.logger.info(f"Uploading {frame_object_key} to {bucket_name}.")
+            s3.upload_fileobj(BytesIO(img_bytes), bucket_name, frame_object_key)
 
         # Release the video capture object
         cap.release()
-
 
     return jsonify({'message': 'Hello from the endpoint'}), 200
 
