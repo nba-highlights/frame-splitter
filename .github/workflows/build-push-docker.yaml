@@ -3,7 +3,7 @@ name: Build Docker Image, Push to GH Packages
 on:
   workflow_dispatch:
   push:
-    branches: *
+    branches: '**'
 
 env:
   REGISTRY: ghcr.io
