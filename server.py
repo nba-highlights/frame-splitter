@@ -3,6 +3,7 @@
 import json
 import logging
 import boto3
+import cv2
 
 from pathlib import Path
 
@@ -67,6 +68,7 @@ def split_full_match_video():
 
         video_dir = "temp-video"
         Path(video_dir).mkdir(parents=True, exist_ok=True)
+        video_path = f"{video_dir}/{object_key}"
 
         # download object
         s3 = boto3.client('s3')
@@ -74,9 +76,36 @@ def split_full_match_video():
         app.logger.info(f"Received following message: {message}")
         app.logger.info(f"Downloading Object: {object_key} from Bucket: {bucket}.")
 
-        with open(f"{video_dir}/{object_key}", 'wb') as file:
+        with open(video_path, 'wb') as file:
             s3.download_fileobj(bucket, object_key, file)
             app.logger.info("Download successful.")
+
+
+        # Open the video file
+        cap = cv2.VideoCapture(video_path)
+
+        # Check if the video file was opened successfully
+        if not cap.isOpened():
+            app.logger.error(f"Could not open video file: {video_path}")
+
+        frame_dir = "frames"
+        Path(frame_dir).mkdir(parents=True, exist_ok=True)
+
+        frame_count = 0
+        # Loop through the frames
+        while True:
+            ret, frame = cap.read()
+
+            # Break the loop if no more frames are available
+            if not ret:
+                break
+
+            frame_count += 1
+            frame_filename = f'{frame_dir}/frame_{frame_count:04d}.jpg'
+            cv2.imwrite(frame_filename, frame)
+
+        # Release the video capture object and close the window
+        cap.release()
 
     return jsonify({'message': 'Hello from the endpoint'}), 200
 
