@@ -101,7 +101,7 @@ def split_full_match_video():
                 break
 
             frame_count += 1
-            frame_filename = f'{frame_dir}/frame_{frame_count:04d}.jpg'
+            frame_filename = f'{frame_dir}/{object_key}_frame_{frame_count:04d}.jpg'
             cv2.imwrite(frame_filename, frame)
 
         # Release the video capture object and close the window
