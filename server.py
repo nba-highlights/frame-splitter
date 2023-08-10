@@ -44,6 +44,11 @@ def confirm_subscription(request_header, request_data):
                                "subscription to confirm."}), 500
 
 
+@app.route('/health', methods=["GET"])
+def health_check():
+    return jsonify({"message": "Health Check OK"}), 200
+
+
 @app.route('/split-full-match-video', methods=['POST'])
 def split_full_match_video():
     request_data = request.data.decode('utf-8')
