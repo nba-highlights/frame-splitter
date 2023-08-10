@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from io import BytesIO
 
 import boto3
@@ -82,7 +83,6 @@ def split_full_match_video():
             s3.download_fileobj(bucket, object_key, file)
             app.logger.info("Download successful.")
 
-
         # Open the video file
         cap = cv2.VideoCapture(video_path)
 
@@ -120,7 +120,16 @@ def split_full_match_video():
             # Upload the frame to S3
             metadata = {"game-id": game_id}
             app.logger.info(f"Uploading {frame_object_key} to {bucket_name}.")
-            s3.upload_fileobj(BytesIO(img_bytes), bucket_name, frame_object_key, ExtraArgs={"Metadata": metadata})
+
+            try:
+                s3.upload_fileobj(BytesIO(img_bytes), bucket_name, frame_object_key, ExtraArgs={"Metadata": metadata})
+                app.logger.info(f"Deleting local version of {frame_object_key} from {frame_filename}.")
+                os.remove(frame_filename)
+                app.logger.info(f"File {frame_filename} successfully deleted.")
+            except OSError as e:
+                app.logger.warning(f"Could not delete local frame {frame_filename}.", exc_info=e)
+            except Exception as e:
+                app.logger.warning(f"Could not upload frame {frame_object_key} to bucket {bucket_name}.", exc_info=e)
 
         # Release the video capture object
         cap.release()
