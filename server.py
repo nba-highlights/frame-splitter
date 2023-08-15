@@ -17,8 +17,12 @@ from flask import Flask, request, jsonify, current_app
 app = Flask(__name__)
 app.logger.setLevel(logging.DEBUG)  # Set the logging level to debug
 
+# the executor pool used by the splitting endpoint
 executor = ThreadPoolExecutor(2)
+
+# the futures store. If a game is currently being processed, it will be stored here in the meantime.
 futures = {}
+
 
 def confirm_subscription(request_header, request_data):
     """Confirms the SNS subscription."""
@@ -78,8 +82,83 @@ def emit_num_frames_event(game_id: str, num_frames: int):
         app.logger.warning(f"Could not emit event.", exc_info=e)
 
 
+def delete_local_frame(frame_path: str):
+    """Deletes the local version of the frame.
+
+    :arg
+        frame_path (str): the path to the frame.
+    """
+    try:
+        app.logger.info(f"Deleting local version of frame from {frame_path}.")
+        os.remove(frame_path)
+        app.logger.info(f"File {frame_path} successfully deleted.")
+    except OSError as e:
+        app.logger.warning(f"Could not delete local frame {frame_path}.", exc_info=e)
+
+
+def upload_frame(s3_client, frame, bucket_name: str, object_key: str):
+    """Uploads a frame to the specified bucket with the given object key.
+
+    :arg
+        s3_client: the boto3 s3 client object.
+        frame: a CV2 frame.
+        bucket_name (str): the bucket to which to upload the frame.
+        object_key (str): the name of the frame in the bucket.
+
+    :return
+        (bool) true if upload was successful, false if not.
+    """
+    img_bytes = frame.tobytes()
+
+    # Specify S3 bucket details
+    # save the frame in a folder named after the game name
+    game_id = object_key.split(".")[0]
+    frame_object_key = f"{game_id}/frame_{frame_count:04d}.jpg"
+
+    # Upload the frame to S3
+    metadata = {"game-id": game_id}
+    app.logger.info(f"Uploading {frame_object_key} to {bucket_name}.")
+
+    try:
+        s3_client.upload_fileobj(BytesIO(img_bytes), bucket_name, frame_object_key, ExtraArgs={"Metadata": metadata})
+        return True
+    except Exception as e:
+        app.logger.warning(f"Could not upload frame {frame_object_key} to bucket {bucket_name}.", exc_info=e)
+
+    return False
+
+
+def get_frames(video_path: str):
+    """Generator for the frames at the provided path.
+
+    :arg
+        video_path (str): the path to the video from which to get the frames.
+    """
+    # Open the video file
+    cap = cv2.VideoCapture(video_path)
+
+    # Check if the video file was opened successfully
+    if not cap.isOpened():
+        app.logger.error(f"Could not open video file: {video_path}")
+
+    # Loop through the frames
+    while True:
+        ret, frame = cap.read()
+
+        # Break the loop if no more frames are available
+        if not ret:
+            break
+
+        yield frame
+
+    # Release the video capture object
+    cap.release()
+
 def split_video(bucket, object_key):
     """Splits the video located at the bucket and object location into frames and uploads the frames to S3.
+
+    All frames are saved to local storage as an intermediate step, and are deleted afterwards if they upload to S3 bucket
+    is successful.
 
     :arg
         bucket (str): the name of the bucket where to find the video.
@@ -101,13 +180,6 @@ def split_video(bucket, object_key):
         s3.download_fileobj(bucket, object_key, file)
         app.logger.info("Download successful.")
 
-    # Open the video file
-    cap = cv2.VideoCapture(video_path)
-
-    # Check if the video file was opened successfully
-    if not cap.isOpened():
-        app.logger.error(f"Could not open video file: {video_path}")
-
     frame_dir = "frames"
     Path(frame_dir).mkdir(parents=True, exist_ok=True)
     bucket_name = "nba-match-frames"
@@ -115,42 +187,16 @@ def split_video(bucket, object_key):
     frame_count = 0
 
     app.logger.info("Going through frames of the video.")
-    # Loop through the frames
-    while True:
-        ret, frame = cap.read()
 
-        # Break the loop if no more frames are available
-        if not ret:
-            break
-
+    for frame in get_frames(video_path):
         frame_count += 1
         frame_name = f"{object_key}_frame_{frame_count:04d}.jpg"
-        frame_filename = f'{frame_dir}/{frame_name}'
-        cv2.imwrite(frame_filename, frame)
+        local_frame_path = f'{frame_dir}/{frame_name}'
+        cv2.imwrite(local_frame_path, frame)
 
-        img_bytes = frame.tobytes()
+        if upload_frame(s3, frame, bucket_name, frame_name):
+            delete_local_frame(local_frame_path)
 
-        # Specify S3 bucket details
-        # save the frame in a folder named after the game name
-        game_id = object_key.split(".")[0]
-        frame_object_key = f"{game_id}/frame_{frame_count:04d}.jpg"
-
-        # Upload the frame to S3
-        metadata = {"game-id": game_id}
-        app.logger.info(f"Uploading {frame_object_key} to {bucket_name}.")
-
-        try:
-            s3.upload_fileobj(BytesIO(img_bytes), bucket_name, frame_object_key, ExtraArgs={"Metadata": metadata})
-            app.logger.info(f"Deleting local version of {frame_object_key} from {frame_filename}.")
-            os.remove(frame_filename)
-            app.logger.info(f"File {frame_filename} successfully deleted.")
-        except OSError as e:
-            app.logger.warning(f"Could not delete local frame {frame_filename}.", exc_info=e)
-        except Exception as e:
-            app.logger.warning(f"Could not upload frame {frame_object_key} to bucket {bucket_name}.", exc_info=e)
-
-    # Release the video capture object
-    cap.release()
     app.logger.info(f"Uploaded {frame_count} frames to {bucket_name}.")
     return frame_count
 
@@ -167,6 +213,11 @@ def health_check():
 
 @app.route('/split-full-match-video', methods=['POST'])
 def split_full_match_video():
+    """Flask endpoint that splits a video into frames and uploads the frames to an S3 bucket.
+
+    This endpoint is usually triggered by an AWS event, emitted when the video is added to an S3 bucket and then sent
+    to this service by AWS SNS. This endpoint also confirms the SNS subscription.
+    """
     request_data = request.data.decode('utf-8')
 
     # Parse the JSON data into a Python dictionary
