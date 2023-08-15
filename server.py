@@ -96,7 +96,7 @@ def delete_local_frame(frame_path: str):
         app.logger.warning(f"Could not delete local frame {frame_path}.", exc_info=e)
 
 
-def upload_frame(s3_client, frame, bucket_name: str, object_key: str):
+def upload_frame(s3_client, frame, bucket_name: str, frame_object_key: str, game_id: str):
     """Uploads a frame to the specified bucket with the given object key.
 
     :arg
@@ -104,6 +104,7 @@ def upload_frame(s3_client, frame, bucket_name: str, object_key: str):
         frame: a CV2 frame.
         bucket_name (str): the bucket to which to upload the frame.
         object_key (str): the name of the frame in the bucket.
+        game_id (str): the ID of the game that the frame belongs to.
 
     :return
         (bool) true if upload was successful, false if not.
@@ -111,9 +112,6 @@ def upload_frame(s3_client, frame, bucket_name: str, object_key: str):
     img_bytes = frame.tobytes()
 
     # Specify S3 bucket details
-    # save the frame in a folder named after the game name
-    game_id = object_key.split(".")[0]
-    frame_object_key = f"{game_id}/frame_{frame_count:04d}.jpg"
 
     # Upload the frame to S3
     metadata = {"game-id": game_id}
@@ -154,6 +152,7 @@ def get_frames(video_path: str):
     # Release the video capture object
     cap.release()
 
+
 def split_video(bucket, object_key):
     """Splits the video located at the bucket and object location into frames and uploads the frames to S3.
 
@@ -191,10 +190,14 @@ def split_video(bucket, object_key):
     for frame in get_frames(video_path):
         frame_count += 1
         frame_name = f"{object_key}_frame_{frame_count:04d}.jpg"
+
         local_frame_path = f'{frame_dir}/{frame_name}'
         cv2.imwrite(local_frame_path, frame)
 
-        if upload_frame(s3, frame, bucket_name, frame_name):
+        # save the frame in a folder named after the game name
+        game_id = object_key.split(".")[0]
+
+        if upload_frame(s3, frame, bucket_name, frame_name, game_id):
             delete_local_frame(local_frame_path)
 
     app.logger.info(f"Uploaded {frame_count} frames to {bucket_name}.")
