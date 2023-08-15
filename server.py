@@ -202,7 +202,6 @@ def split_full_match_video():
             else:
                 app.logger.info(f"The file {game_id} finished processing.")
                 del futures[game_id]
-                return jsonify({"message": "Game file finished processing."}), 200
 
         app.logger.info(f"Starting splitting of video {game_id}.")
 
