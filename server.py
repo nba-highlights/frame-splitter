@@ -74,6 +74,9 @@ def split_full_match_video():
         bucket = detail["bucket"]["name"]
         object_key = detail["object"]["key"]
 
+        # the name of the video file is the game ID
+        game_id = object_key.split(".")[0]
+
         video_dir = "temp-video"
         Path(video_dir).mkdir(parents=True, exist_ok=True)
         video_path = f"{video_dir}/{object_key}"
@@ -139,6 +142,28 @@ def split_full_match_video():
         # Release the video capture object
         cap.release()
         app.logger.info(f"Uploaded {frame_count} frames to {bucket_name}.")
+
+        eventbridge_client = boto3.client('events', region_name='eu-north-1')
+        event_data = {
+            "game-id": game_id,
+            "num-frames": frame_count
+        }
+        app.logger.info(f"Emitting event with data: {event_data}.")
+        # PutEvents request to send the custom event
+        try:
+            response = eventbridge_client.put_events(
+                Entries=[
+                    {
+                        'Source': "frame-splitter",
+                        'DetailType': "FramesAddedToS3Event",
+                        'Detail': json.dumps(event_data),
+                        'EventBusName': 'default'  # Replace with your EventBridge EventBusName
+                    }
+                ]
+            )
+            app.logger.info(f"Event successfully emitted. {response}")
+        except Exception as e:
+            app.logger.warning(f"Could not emit event.", exc_info=e)
 
     return jsonify({'message': 'Hello from the endpoint'}), 200
 
