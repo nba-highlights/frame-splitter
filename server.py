@@ -179,25 +179,26 @@ def split_video(bucket, object_key):
         s3.download_fileobj(bucket, object_key, file)
         app.logger.info("Download successful.")
 
-    frame_dir = "frames"
+    game_id = object_key.split(".")[0]
+    frame_dir = f"frames/{game_id}"
     Path(frame_dir).mkdir(parents=True, exist_ok=True)
     bucket_name = "nba-match-frames"
-
     frame_count = 0
 
     app.logger.info("Going through frames of the video.")
 
     for frame in get_frames(video_path):
+
         frame_count += 1
-        frame_name = f"{object_key}_frame_{frame_count:04d}.jpg"
+        frame_name = f"frame_{frame_count:04d}.jpg"
 
         local_frame_path = f'{frame_dir}/{frame_name}'
         cv2.imwrite(local_frame_path, frame)
 
         # save the frame in a folder named after the game name
-        game_id = object_key.split(".")[0]
+        frame_object_key = f"{game_id}/{frame_name}"
 
-        if upload_frame(s3, frame, bucket_name, frame_name, game_id):
+        if upload_frame(s3, frame, bucket_name, frame_object_key, game_id):
             delete_local_frame(local_frame_path)
 
     app.logger.info(f"Uploaded {frame_count} frames to {bucket_name}.")
@@ -209,62 +210,72 @@ def split_and_emit(bucket, object_key, game_id):
     emit_num_frames_event(game_id, frame_count)
 
 
+def _split_video(bucket, object_key):
+    # the name of the video file is the game ID
+    game_id = object_key.split(".")[0]
+
+    # if task is still running, ignore the request
+    if game_id in futures:
+        if not futures[game_id].done():
+            app.logger.info(f"The file {object_key} is already being processed.")
+            return jsonify({"message": "Game file is already being processed."}), 200
+        else:
+            app.logger.info(f"The file {object_key} finished processing.")
+            del futures[game_id]
+
+    app.logger.info(f"Starting splitting of video {object_key}.")
+
+    future = executor.submit(split_and_emit, bucket, object_key, game_id)
+    futures[game_id] = future
+
+
 @app.route('/health', methods=["GET"])
 def health_check():
     return jsonify({"message": "Health Check OK"}), 200
 
 
-@app.route('/split-full-match-video', methods=['POST'])
+@app.route('/split-full-match-video', methods=['POST', 'GET'])
 def split_full_match_video():
     """Flask endpoint that splits a video into frames and uploads the frames to an S3 bucket.
 
     This endpoint is usually triggered by an AWS event, emitted when the video is added to an S3 bucket and then sent
     to this service by AWS SNS. This endpoint also confirms the SNS subscription.
     """
-    request_data = request.data.decode('utf-8')
+    if request.method == "GET":
+        bucket = request.args.get("bucket")
+        object_key = request.args.get("object-key")
+    elif request.method == "POST":
+        request_data = request.data.decode('utf-8')
 
-    # Parse the JSON data into a Python dictionary
-    try:
-        data = json.loads(request_data)
-    except json.JSONDecodeError as e:
-        return jsonify({'error': str(e)}), 400
+        # Parse the JSON data into a Python dictionary
+        try:
+            data = json.loads(request_data)
+        except json.JSONDecodeError as e:
+            return jsonify({'error': str(e)}), 400
 
-    # if the subscription is confirmed, return after it
-    if request.headers.get('x-amz-sns-message-type') == 'SubscriptionConfirmation':
-        return confirm_subscription(request.headers, data)
+        # if the subscription is confirmed, return after it
+        if request.headers.get('x-amz-sns-message-type') == 'SubscriptionConfirmation':
+            return confirm_subscription(request.headers, data)
 
-    app.logger.info(f"Received Event: {data}.")
+        app.logger.info(f"Received Event: {data}.")
 
-    # extract bucket and key
-    message = json.loads(data["Message"])
-    app.logger.info(f"Received following message: {message}")
+        # extract bucket and key
+        message = json.loads(data["Message"])
+        app.logger.info(f"Received following message: {message}")
 
-    if message["detail-type"] == "Object Created":
-        app.logger.info("Received object created message.")
-        detail = message["detail"]
-        bucket = detail["bucket"]["name"]
-        object_key = detail["object"]["key"]
+        if message["detail-type"] == "Object Created":
+            app.logger.info("Received object created message.")
+            detail = message["detail"]
+            bucket = detail["bucket"]["name"]
+            object_key = detail["object"]["key"]
+        else:
+            return jsonify({"message": "Invalid request"}), 400
+    else:
+        return jsonify({"message": "Method not allowed. This endpoint only accepts GET and POST requests."}), 405
 
-        # the name of the video file is the game ID
-        game_id = object_key.split(".")[0]
+    _split_video(bucket, object_key)
 
-        # if task is still running, ignore the request
-        if game_id in futures:
-            if not futures[game_id].done():
-                app.logger.info(f"The file {game_id} is already being processed.")
-                return jsonify({"message": "Game file is already being processed."}), 200
-            else:
-                app.logger.info(f"The file {game_id} finished processing.")
-                del futures[game_id]
-
-        app.logger.info(f"Starting splitting of video {game_id}.")
-
-        future = executor.submit(split_and_emit, bucket, object_key, game_id)
-        futures[game_id] = future
-
-        return jsonify({'message': 'Game file in process'}), 200
-
-    return jsonify({"message": "Invalid request"}), 400
+    return jsonify({'message': 'Game file in process'}), 200
 
 
 @app.route('/hello-world', methods=['GET'])
