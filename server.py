@@ -44,6 +44,37 @@ def confirm_subscription(request_header, request_data):
                                "subscription to confirm."}), 500
 
 
+def emit_num_frames_event(game_id: str, num_frames: int):
+    """Emits an event to the default event bus that contains the number of frames in the video for a given game ID.
+
+    :arg
+        game_id (str): the ID of the game to be placed inside the event.
+        num_frames (int): the number of frames to be placed inside the event.
+
+    """
+    eventbridge_client = boto3.client('events', region_name='eu-north-1')
+    event_data = {
+        "game-id": game_id,
+        "num-frames": num_frames
+    }
+    app.logger.info(f"Emitting event with data: {event_data}.")
+    # PutEvents request to send the custom event
+    try:
+        response = eventbridge_client.put_events(
+            Entries=[
+                {
+                    'Source': "frame-splitter",
+                    'DetailType': "FramesAddedToS3Event",
+                    'Detail': json.dumps(event_data),
+                    'EventBusName': 'default'  # Replace with your EventBridge EventBusName
+                }
+            ]
+        )
+        app.logger.info(f"Event successfully emitted. {response}")
+    except Exception as e:
+        app.logger.warning(f"Could not emit event.", exc_info=e)
+
+
 @app.route('/health', methods=["GET"])
 def health_check():
     return jsonify({"message": "Health Check OK"}), 200
@@ -143,28 +174,7 @@ def split_full_match_video():
         cap.release()
         app.logger.info(f"Uploaded {frame_count} frames to {bucket_name}.")
 
-        eventbridge_client = boto3.client('events', region_name='eu-north-1')
-        event_data = {
-            "game-id": game_id,
-            "num-frames": frame_count
-        }
-        app.logger.info(f"Emitting event with data: {event_data}.")
-        # PutEvents request to send the custom event
-        try:
-            response = eventbridge_client.put_events(
-                Entries=[
-                    {
-                        'Source': "frame-splitter",
-                        'DetailType': "FramesAddedToS3Event",
-                        'Detail': json.dumps(event_data),
-                        'EventBusName': 'default'  # Replace with your EventBridge EventBusName
-                    }
-                ]
-            )
-            app.logger.info(f"Event successfully emitted. {response}")
-        except Exception as e:
-            app.logger.warning(f"Could not emit event.", exc_info=e)
-
+        emit_num_frames_event(game_id, frame_count)
     return jsonify({'message': 'Hello from the endpoint'}), 200
 
 
