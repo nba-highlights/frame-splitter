@@ -9,13 +9,16 @@ import boto3
 import cv2
 
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, current_app
 
 app = Flask(__name__)
 app.logger.setLevel(logging.DEBUG)  # Set the logging level to debug
 
+executor = ThreadPoolExecutor(2)
+futures = {}
 
 def confirm_subscription(request_header, request_data):
     """Confirms the SNS subscription."""
@@ -75,6 +78,88 @@ def emit_num_frames_event(game_id: str, num_frames: int):
         app.logger.warning(f"Could not emit event.", exc_info=e)
 
 
+def split_video(bucket, object_key):
+    """Splits the video located at the bucket and object location into frames and uploads the frames to S3.
+
+    :arg
+        bucket (str): the name of the bucket where to find the video.
+        object_key (str): the object key of the video in the bucket.
+
+    :return
+        (int): the number of frames uploaded.
+    """
+    video_dir = "temp-video"
+    Path(video_dir).mkdir(parents=True, exist_ok=True)
+    video_path = f"{video_dir}/{object_key}"
+
+    # download object
+    s3 = boto3.client('s3')
+
+    app.logger.info(f"Downloading Object: {object_key} from Bucket: {bucket}.")
+
+    with open(video_path, 'wb') as file:
+        s3.download_fileobj(bucket, object_key, file)
+        app.logger.info("Download successful.")
+
+    # Open the video file
+    cap = cv2.VideoCapture(video_path)
+
+    # Check if the video file was opened successfully
+    if not cap.isOpened():
+        app.logger.error(f"Could not open video file: {video_path}")
+
+    frame_dir = "frames"
+    Path(frame_dir).mkdir(parents=True, exist_ok=True)
+    bucket_name = "nba-match-frames"
+
+    frame_count = 0
+
+    app.logger.info("Going through frames of the video.")
+    # Loop through the frames
+    while True:
+        ret, frame = cap.read()
+
+        # Break the loop if no more frames are available
+        if not ret:
+            break
+
+        frame_count += 1
+        frame_name = f"{object_key}_frame_{frame_count:04d}.jpg"
+        frame_filename = f'{frame_dir}/{frame_name}'
+        cv2.imwrite(frame_filename, frame)
+
+        img_bytes = frame.tobytes()
+
+        # Specify S3 bucket details
+        # save the frame in a folder named after the game name
+        game_id = object_key.split(".")[0]
+        frame_object_key = f"{game_id}/frame_{frame_count:04d}.jpg"
+
+        # Upload the frame to S3
+        metadata = {"game-id": game_id}
+        app.logger.info(f"Uploading {frame_object_key} to {bucket_name}.")
+
+        try:
+            s3.upload_fileobj(BytesIO(img_bytes), bucket_name, frame_object_key, ExtraArgs={"Metadata": metadata})
+            app.logger.info(f"Deleting local version of {frame_object_key} from {frame_filename}.")
+            os.remove(frame_filename)
+            app.logger.info(f"File {frame_filename} successfully deleted.")
+        except OSError as e:
+            app.logger.warning(f"Could not delete local frame {frame_filename}.", exc_info=e)
+        except Exception as e:
+            app.logger.warning(f"Could not upload frame {frame_object_key} to bucket {bucket_name}.", exc_info=e)
+
+    # Release the video capture object
+    cap.release()
+    app.logger.info(f"Uploaded {frame_count} frames to {bucket_name}.")
+    return frame_count
+
+
+def split_and_emit(bucket, object_key, game_id):
+    frame_count = split_video(bucket, object_key)
+    emit_num_frames_event(game_id, frame_count)
+
+
 @app.route('/health', methods=["GET"])
 def health_check():
     return jsonify({"message": "Health Check OK"}), 200
@@ -98,6 +183,7 @@ def split_full_match_video():
 
     # extract bucket and key
     message = json.loads(data["Message"])
+    app.logger.info(f"Received following message: {message}")
 
     if message["detail-type"] == "Object Created":
         app.logger.info("Received object created message.")
@@ -108,74 +194,24 @@ def split_full_match_video():
         # the name of the video file is the game ID
         game_id = object_key.split(".")[0]
 
-        video_dir = "temp-video"
-        Path(video_dir).mkdir(parents=True, exist_ok=True)
-        video_path = f"{video_dir}/{object_key}"
+        # if task is still running, ignore the request
+        if game_id in futures:
+            if not futures[game_id].done():
+                app.logger.info(f"The file {game_id} is already being processed.")
+                return jsonify({"message": "Game file is already being processed."}), 200
+            else:
+                app.logger.info(f"The file {game_id} finished processing.")
+                del futures[game_id]
+                return jsonify({"message": "Game file finished processing."}), 200
 
-        # download object
-        s3 = boto3.client('s3')
+        app.logger.info(f"Starting splitting of video {game_id}.")
 
-        app.logger.info(f"Received following message: {message}")
-        app.logger.info(f"Downloading Object: {object_key} from Bucket: {bucket}.")
+        future = executor.submit(split_and_emit, bucket, object_key, game_id)
+        futures[game_id] = future
 
-        with open(video_path, 'wb') as file:
-            s3.download_fileobj(bucket, object_key, file)
-            app.logger.info("Download successful.")
+        return jsonify({'message': 'Game file in process'}), 200
 
-        # Open the video file
-        cap = cv2.VideoCapture(video_path)
-
-        # Check if the video file was opened successfully
-        if not cap.isOpened():
-            app.logger.error(f"Could not open video file: {video_path}")
-
-        frame_dir = "frames"
-        Path(frame_dir).mkdir(parents=True, exist_ok=True)
-        bucket_name = "nba-match-frames"
-
-        frame_count = 0
-
-        app.logger.info("Going through frames of the video.")
-        # Loop through the frames
-        while True:
-            ret, frame = cap.read()
-
-            # Break the loop if no more frames are available
-            if not ret:
-                break
-
-            frame_count += 1
-            frame_name = f"{object_key}_frame_{frame_count:04d}.jpg"
-            frame_filename = f'{frame_dir}/{frame_name}'
-            cv2.imwrite(frame_filename, frame)
-
-            img_bytes = frame.tobytes()
-
-            # Specify S3 bucket details
-            # save the frame in a folder named after the game name
-            game_id = object_key.split(".")[0]
-            frame_object_key = f"{game_id}/frame_{frame_count:04d}.jpg"
-
-            # Upload the frame to S3
-            metadata = {"game-id": game_id}
-            app.logger.info(f"Uploading {frame_object_key} to {bucket_name}.")
-
-            try:
-                s3.upload_fileobj(BytesIO(img_bytes), bucket_name, frame_object_key, ExtraArgs={"Metadata": metadata})
-                app.logger.info(f"Deleting local version of {frame_object_key} from {frame_filename}.")
-                os.remove(frame_filename)
-                app.logger.info(f"File {frame_filename} successfully deleted.")
-            except OSError as e:
-                app.logger.warning(f"Could not delete local frame {frame_filename}.", exc_info=e)
-            except Exception as e:
-                app.logger.warning(f"Could not upload frame {frame_object_key} to bucket {bucket_name}.", exc_info=e)
-
-        # Release the video capture object
-        cap.release()
-        app.logger.info(f"Uploaded {frame_count} frames to {bucket_name}.")
-
-        emit_num_frames_event(game_id, frame_count)
-    return jsonify({'message': 'Hello from the endpoint'}), 200
+    return jsonify({"message": "Invalid request"}), 400
 
 
 @app.route('/hello-world', methods=['GET'])
