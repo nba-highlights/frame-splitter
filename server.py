@@ -96,7 +96,7 @@ def delete_local_frame(frame_path: str):
         app.logger.warning(f"Could not delete local frame {frame_path}.", exc_info=e)
 
 
-def upload_frame(s3_client, frame, bucket_name: str, frame_object_key: str, game_id: str):
+def upload_frame(s3_client, frame_path: str, bucket_name: str, frame_object_key: str, game_id: str):
     """Uploads a frame to the specified bucket with the given object key.
 
     :arg
@@ -109,16 +109,12 @@ def upload_frame(s3_client, frame, bucket_name: str, frame_object_key: str, game
     :return
         (bool) true if upload was successful, false if not.
     """
-    img_bytes = frame.tobytes()
-
-    # Specify S3 bucket details
-
     # Upload the frame to S3
     metadata = {"game-id": game_id}
     app.logger.info(f"Uploading {frame_object_key} to {bucket_name}.")
 
     try:
-        s3_client.upload_fileobj(BytesIO(img_bytes), bucket_name, frame_object_key, ExtraArgs={"Metadata": metadata})
+        s3_client.upload_file(frame_path, bucket_name, frame_object_key, ExtraArgs={"Metadata": metadata})
         return True
     except Exception as e:
         app.logger.warning(f"Could not upload frame {frame_object_key} to bucket {bucket_name}.", exc_info=e)
@@ -183,6 +179,7 @@ def split_video(bucket, object_key):
     frame_dir = f"frames/{game_id}"
     Path(frame_dir).mkdir(parents=True, exist_ok=True)
     bucket_name = "nba-match-frames"
+
     frame_count = 0
 
     app.logger.info("Going through frames of the video.")
@@ -198,7 +195,7 @@ def split_video(bucket, object_key):
         # save the frame in a folder named after the game name
         frame_object_key = f"{game_id}/{frame_name}"
 
-        if upload_frame(s3, frame, bucket_name, frame_object_key, game_id):
+        if upload_frame(s3, local_frame_path, bucket_name, frame_object_key, game_id):
             delete_local_frame(local_frame_path)
 
     app.logger.info(f"Uploaded {frame_count} frames to {bucket_name}.")
