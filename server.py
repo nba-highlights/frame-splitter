@@ -211,6 +211,7 @@ def _split_video(bucket, object_key):
     # the name of the video file is the game ID
     game_id = object_key.split(".")[0]
 
+    """
     # if task is still running, ignore the request
     if game_id in futures:
         if not futures[game_id].done():
@@ -224,6 +225,8 @@ def _split_video(bucket, object_key):
 
     future = executor.submit(split_and_emit, bucket, object_key, game_id)
     futures[game_id] = future
+    """
+    executor.submit(split_and_emit, bucket, object_key, game_id)
 
 
 @app.route('/health', methods=["GET"])
